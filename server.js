@@ -16,6 +16,38 @@ app.use(cors());
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
+// Root endpoint to provide instructions
+app.get('/', (req, res) => {
+    res.send(`
+        <html>
+            <head>
+                <title>WhatsApp Pairing Server</title>
+                <style>
+                    body { font-family: Arial, sans-serif; text-align: center; padding: 50px; }
+                    code { background: #f4f4f4; padding: 2px 5px; border-radius: 3px; }
+                    h1 { color: #28a745; }
+                </style>
+            </head>
+            <body>
+                <h1>WhatsApp Session Pairing Service is Running!</h1>
+                <p>This server facilitates Baileys session pairing via a 6-digit code or QR.</p>
+                <h2>How to start a new pairing:</h2>
+                <p>Make a GET request to the <code>/pair</code> endpoint.</p>
+                <pre style="background: #e9ecef; padding: 15px; border-radius: 5px; display: inline-block;">
+GET ${req.protocol}://${req.get('host')}/pair
+                </pre>
+                <p>The response will return a <code>code</code> and a <code>url</code> to follow for pairing.</p>
+                <p>Example pairing URL: <code>/scan/123456</code></p>
+                <hr>
+                <p style="font-size: 0.9em; color: #6c757d;">
+                    Check pairing status using: <code>/status/:code</code>
+                </p>
+            </body>
+        </html>
+    `);
+});
+
+
 const SESSIONS_DIR = path.join(__dirname, 'sessions');
 if (!fs.existsSync(SESSIONS_DIR)) fs.mkdirSync(SESSIONS_DIR);
 
@@ -77,12 +109,12 @@ app.get('/pair', async (req, res) => {
       code,
       status: 'created',
       qr: null,
-      pairingCode: null, // New field for 6-digit code
+      pairingCode: null, // Field for 6-digit code
       sessionPath: sessDir,
       createdAt: Date.now() // Track creation time for cleanup
     };
 
-    // Start the QR pairing process in background (non-blocking)
+    // Start the QR/Code pairing process in background (non-blocking)
     startPairingForCode(code).catch(err => {
       console.error('pairing error for', code, err);
       pairingMap[code].status = 'error';
@@ -107,12 +139,14 @@ app.get('/scan/:code', async (req, res) => {
 
   let contentHtml = '';
   
-  if (pairingCode) {
+  if (info.status === 'open') {
+     contentHtml = `<h2>✅ Paired Successfully!</h2>`;
+  } else if (pairingCode) {
       // Display the code prominently if it's available
       contentHtml = `
         <h2 style="color: green;">✅ Pairing Code Available</h2>
         <p>Enter this **6-digit code** into your WhatsApp Mobile App:</p>
-        <div style="font-size: 3em; font-weight: bold; padding: 10px; border: 2px solid #333; display: inline-block; background: #eee;">
+        <div style="font-size: 3em; font-weight: bold; padding: 10px; border: 2px solid #333; display: inline-block; background: #eee; margin-bottom: 20px;">
             ${pairingCode}
         </div>
       `;
@@ -123,7 +157,7 @@ app.get('/scan/:code', async (req, res) => {
         <p style="margin-top: 20px; font-size: 1.1em;">
             OR, use the 6-digit code instead:
         </p>
-        <button onclick="window.location.href='/scan/${code}?mode=code'" 
+        <button onclick="alert('The 6-digit code should appear shortly. Refresh the page if it doesn\\'t show in 5 seconds.');" 
                 style="padding: 10px 20px; font-size: 1.2em; cursor: pointer; background-color: #007bff; color: white; border: none; border-radius: 5px;">
             Get 6-Digit Code
         </button>
@@ -140,13 +174,12 @@ app.get('/scan/:code', async (req, res) => {
         ${info.status !== 'open' ? '<meta http-equiv="refresh" content="5">' : ''}
       </head>
       <body style="font-family: Arial; text-align:center; padding:30px;">
-        <h1>Scan with WhatsApp</h1>
+        <h1>WhatsApp Pairing</h1>
         <p><strong>Session ID:</strong> ${code}</p>
         <p>Status: <strong>${info.status}</strong></p>
         
         ${contentHtml}
 
-        ${info.status === 'open' ? '<h2>✅ Paired Successfully!</h2>' : ''}
         <p style="margin-top:20px;">
           <a href="/download-session/${code}">Download session JSON (when ready)</a>
         </p>
@@ -176,7 +209,7 @@ app.get('/status/:code', (req, res) => {
     res.json({
         ok: true,
         code: mapCode,
-        status, // 'created', 'connecting', 'qr', 'open', 'closed', 'error'
+        status, // 'created', 'connecting', 'qr', 'code', 'open', 'closed', 'error'
         qrAvailable: !!qr,
         pairingCode: pairingCode || null, // Include the pairing code
         sessionReady, // true if session_id.json exists
@@ -201,6 +234,7 @@ app.get('/download-session/:code', async (req, res) => {
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
   console.log('Pairing server running on port', PORT);
+  console.log('Root URL: GET /');
   console.log('Create pairing code: GET /pair');
   console.log('Check status: GET /status/:code');
 });
@@ -215,9 +249,6 @@ async function startPairingForCode(code) {
 
   pairingMap[code].status = 'connecting';
   
-  // Determine if we need to request the code explicitly
-  const isCodeMode = info.status === 'code_requested' || info.status === 'qr_received';
-  
   const sock = makeWASocket({
     auth: state,
     printQRInTerminal: false,
@@ -228,9 +259,8 @@ async function startPairingForCode(code) {
         pairingMap[code].status = 'code';
         console.log(`Pairing code generated for ${code}: ${pCode}`);
     },
-    // Prevent QR from being generated if code is already received/requested, or if we decide to force code.
-    // For now, we allow both QR and Code generation based on Baileys default behavior.
-    // If the user lands on /scan/<code>?mode=code, they will see the code.
+    // We explicitly disable legacy QR printing as we use the callback for both code and QR generation
+    qr: true, 
   });
 
   // save reference for potential cleanup
@@ -268,8 +298,6 @@ async function startPairingForCode(code) {
       const outPath = path.join(info.sessionPath, 'session_id.json');
       fs.writeFileSync(outPath, JSON.stringify(files, null, 2), 'utf8');
       console.log('Session saved for', code);
-
-      // The cleanup function will handle socket end if needed later.
     }
 
     if (update.connection === 'close') {
