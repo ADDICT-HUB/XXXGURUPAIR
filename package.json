@@ -1,0 +1,16 @@
+{
+  "name": "whatsapp-session-pairing",
+  "version": "1.0.0",
+  "description": "WhatsApp pairing server (code-based) using Baileys. Generate 6-digit code, show QR, save session.",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "@whiskeysockets/baileys": "^4.0.0",
+    "express": "^4.18.2",
+    "qrcode": "^1.5.1",
+    "cors": "^2.8.5",
+    "uuid": "^9.0.0"
+  }
+}
